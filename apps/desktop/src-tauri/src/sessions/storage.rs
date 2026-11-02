@@ -470,7 +470,17 @@ fn rollout_file_is_open(path: &Path) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(all(target_os = "windows", not(test)))]
+fn rollout_file_is_open(path: &Path) -> bool {
+    // Codex 在 Windows 上会以「只共享读」的方式持有会话日志句柄，此时覆盖写必然失败。
+    // 这里申请写权限试开：不干扰持有者，只有在拿不到写权限时才判为占用。
+    match fs::OpenOptions::new().write(true).open(path) {
+        Ok(_) => false,
+        Err(error) => is_locked_io_error(&error),
+    }
+}
+
+#[cfg(any(test, all(not(target_os = "macos"), not(target_os = "windows"))))]
 fn rollout_file_is_open(_path: &Path) -> bool {
     false
 }
@@ -492,7 +502,7 @@ fn atomic_write_rollout<R: Read>(
     mut reader: R,
     expected_current: &[u8; 32],
     expected_output: &[u8; 32],
-) -> Result<()> {
+) -> Result<bool> {
     let parent = path
         .parent()
         .ok_or_else(|| CodexxError::Config("会话文件缺少父目录".into()))?;
@@ -533,13 +543,16 @@ fn atomic_write_rollout<R: Read>(
         .sync_all()
         .map_err(|error| io_err(path, error))?;
     ensure_rollout_snapshot_unchanged(path, expected_current)?;
-    temporary
-        .persist(path)
-        .map_err(|error| io_err(path, error.error))?;
-    Ok(())
+    // 目标文件在检查之后仍可能被 Codex 重新打开（并发窗口）。此时替换会返回
+    // ERROR_ACCESS_DENIED，应视为「本轮跳过」而不是整批同步失败。
+    match temporary.persist(path) {
+        Ok(_) => Ok(true),
+        Err(error) if is_locked_io_error(&error.error) => Ok(false),
+        Err(error) => Err(io_err(path, error.error)),
+    }
 }
 
-fn write_session_change(change: &SessionFileChange, restore: bool) -> Result<()> {
+fn write_session_change(change: &SessionFileChange, restore: bool) -> Result<bool> {
     let (current, output) = if restore {
         (change.next_hash(), change.original_hash())
     } else {
@@ -591,7 +604,9 @@ where
                 Err(error) if is_locked_io_error(&error) => return Ok(false),
                 Err(error) => return Err(io_err(&change.path, error)),
             }
-            write_session_change(change, false)?;
+            if !write_session_change(change, false)? {
+                return Ok(false);
+            }
             restore_file_mtime(&change.path, change.original_mtime);
             Ok(true)
         })();
@@ -616,7 +631,7 @@ pub(crate) fn restore_session_changes(changes: &[SessionFileChange]) -> Result<(
     for change in changes.iter().rev() {
         if rollout_file_is_open(&change.path)
             || !hash_rollout_file(&change.path).is_ok_and(|hash| hash == change.next_hash())
-            || write_session_change(change, true).is_err()
+            || !matches!(write_session_change(change, true), Ok(true))
         {
             failed += 1;
             continue;

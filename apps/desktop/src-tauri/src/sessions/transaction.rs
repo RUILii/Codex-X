@@ -538,8 +538,21 @@ where
                 .insert(change.path.clone(), change.next_hash());
         }
         if !skipped_rollouts.is_empty() {
+            let mut shown = skipped_rollouts
+                .iter()
+                .take(2)
+                .map(|path| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string())
+                })
+                .collect::<Vec<_>>()
+                .join("、");
+            if skipped_rollouts.len() > 2 {
+                shown.push_str(&format!(" 等 {} 个", skipped_rollouts.len()));
+            }
             return Err(CodexxError::Config(format!(
-                "有 {} 个会话文件被占用或已发生变化，已停止同步；请退出 Codex 后重新检查会话。",
+                "有 {} 个会话文件正被 Codex 占用或已发生变化，已停止同步：{shown}。请先退出仍在使用这些会话的 Codex 窗口或 CLI，再重新检查会话。",
                 skipped_rollouts.len()
             )));
         }
