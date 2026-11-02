@@ -40,14 +40,26 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build renderer
-        run: pnpm --dir apps/desktop build:renderer
+      - name: Build release binary with tauri cli
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP 'bundle-check.json'
+          Set-Content -Path $config -Value '{"bundle":{"createUpdaterArtifacts":false}}' -Encoding utf8
+          pnpm --dir apps/desktop tauri build --no-bundle --config $config --ci
 
-      - name: Build release binary
-        run: cargo build --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
-
-      - name: Inspect binary
-        run: Get-Item apps/desktop/src-tauri/target/release/codex-x.exe | Format-List Name,Length,LastWriteTime
+      - name: Verify binary embeds frontend and patch
+        run: |
+          $exe = 'apps/desktop/src-tauri/target/release/codex-x.exe'
+          if (-not (Test-Path $exe)) { throw "missing binary: $exe" }
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $exe))
+          $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+          Get-Item $exe | Format-List Name, Length, LastWriteTime
+          if ($text -notmatch 'assets/index') {
+            throw 'frontend assets are not embedded: binary would fall back to devUrl 127.0.0.1:1420'
+          }
+          if ($text -notmatch '正被 Codex 占用') {
+            throw 'the windows session lock patch is missing from the binary'
+          }
+          Write-Output 'checks passed: embedded assets + windows lock patch present'
 
       - name: Upload exe
         uses: actions/upload-artifact@v4
