@@ -18,7 +18,23 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
+      - name: Check Star History configuration
+        id: configuration
+        env:
+          INGEST_TOKEN: ${{ secrets.STAR_HISTORY_INGEST_TOKEN }}
+          STAR_HISTORY_ENDPOINT: ${{ vars.STAR_HISTORY_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${INGEST_TOKEN}" || -z "${STAR_HISTORY_ENDPOINT}" ]]; then
+            echo "configured=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::Star History refresh skipped. Configure the STAR_HISTORY_INGEST_TOKEN secret and STAR_HISTORY_ENDPOINT variable to enable it."
+            echo "Star History refresh skipped because the ingest token or endpoint is not configured. Set the STAR_HISTORY_INGEST_TOKEN Actions secret and STAR_HISTORY_ENDPOINT Actions variable to enable refreshes." >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          echo "configured=true" >> "${GITHUB_OUTPUT}"
+
       - name: Send authenticated repository snapshot
+        if: steps.configuration.outputs.configured == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INGEST_TOKEN: ${{ secrets.STAR_HISTORY_INGEST_TOKEN }}
